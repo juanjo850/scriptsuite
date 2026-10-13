@@ -1,0 +1,137 @@
+/* scriptsuite — workspace styling
+ *
+ * Four regions on a plain horizontal/vertical split:
+ *
+ *   ┌──────────┬────────────────────────┬──────────┐
+ *   │ sidebar  │ head                   │          │
+ *   │  34      ├────────────────────────┤  right   │
+ *   │          │ output                 │   38     │
+ *   │          ├────────────────────────┤          │
+ *   │          │ stdin                  │          │
+ *   │          ├────────────────────────┤          │
+ *   │          │ bottom slot            │          │
+ *   └──────────┴────────────────────────┴──────────┘
+ *   status bar
+ *
+ * Plain flex everywhere: hiding a pane is a single `display: none` and its
+ * space flows back to its siblings, so no grid bookkeeping is needed.
+ */
+
+Screen {
+    background: $background;
+    color: $text;
+}
+
+#workspace {
+    width: 1fr;
+    height: 1fr;
+}
+
+/* ------------------------------------------------------------------ sidebar */
+
+#sidebar {
+    width: 34;
+    height: 1fr;
+    background: $surface;
+    border-right: solid $border;
+}
+
+#filter-input {
+    height: 3;
+    margin: 0 1;
+    border: none;
+    border-bottom: solid $border;
+    background: $surface;
+    color: $text;
+    padding: 0 1;
+}
+
+#filter-input:focus {
+    border-bottom: solid $accent;
+    background: $boost;
+}
+
+/* ------------------------------------------------------------ centre column */
+
+#center-col {
+    width: 1fr;
+    height: 1fr;
+}
+
+#output {
+    width: 1fr;
+    height: 1fr;
+    border: round $border;
+    border-title-align: right;
+    border-subtitle-align: left;
+    padding: 0 1;
+}
+
+#output:focus {
+    border: round $accent;
+}
+
+#stdin-input {
+    width: 1fr;
+    height: 3;
+    margin-top: 1;
+}
+
+/* ---------------------------------------------------------- reserved slots */
+
+#bottom-pane {
+    height: 16;
+    margin-top: 1;
+}
+
+/* f7: read the source properly, with the output shrunk to a peek. */
+Screen.-source-max #bottom-pane {
+    height: 1fr;
+}
+
+Screen.-source-max #output {
+    height: 6;
+}
+
+#right-pane {
+    width: 38;
+    height: 1fr;
+    margin: 0;
+    padding: 1 2;
+}
+
+/* ---------------------------------------------------------- responsive */
+
+Screen.-narrow #sidebar {
+    width: 26;
+}
+
+Screen.-narrow #right-pane {
+    width: 32;
+}
+
+Screen.-compact #right-pane {
+    display: none;
+}
+
+Screen.-compact #bottom-pane {
+    height: 9;
+}
+
+/* --------------------------------------------------------------- status bar */
+
+#status-bar {
+    height: 1;
+    width: 1fr;
+}
+
+/* --------------------------------------------------------------- scrollbars */
+
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-color: $accent 20%;
+    scrollbar-color-hover: $accent 40%;
+    scrollbar-color-active: $accent 60%;
+    scrollbar-background: $panel;
+}

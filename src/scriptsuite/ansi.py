@@ -25,6 +25,13 @@ from rich.text import Text
 
 _ESC = "\x1b"
 
+#: A real escape sequence is short.  Past this, treat the bytes as a malformed
+#: sequence and discard them rather than buffering without bound.
+_MAX_CARRY = 8192
+
+#: A single line longer than this is emitted instead of held forever.
+_MAX_PARTIAL = 1_000_000
+
 # Control characters that carry no meaning for a log line.
 _NOISE = frozenset({ord("\x00"), ord("\x07"), ord("\x08"), ord("\x0b"), ord("\x0c")})
 
@@ -114,11 +121,34 @@ def resolve_carriage_returns(data: str) -> str:
     return "\n".join(lines)
 
 
+def _resolve_line(data: str) -> str:
+    """Resolve CRs for plain text; leave ANSI-bearing lines for :func:`to_text`.
+
+    A line with escape sequences must keep them: the style-aware resolver in
+    ``to_text`` needs to know which cells were overwritten.
+    """
+    if "\x1b" in data:
+        return data
+    return resolve_carriage_returns(data)
+
+
+def _normalize_crlf(data: str) -> str:
+    """Collapse the pty's ``\\r\\r\\n`` (and plain CRLF) into ``\\n``.
+
+    Rich's ANSI parser treats a bare ``\\r`` as "discard the current line", so
+    a CRLF left in place would erase the line's text before the newline.
+    """
+    if "\r" not in data:
+        return data
+    return re.sub(r"\r+\n", "\n", data)
+
+
 def to_text(data: str) -> Text:
     """Render decoded text as markup-free, styled ``Text``."""
     if not data:
         return Text()
-    return strip_noise(Text.from_ansi(strip_string_sequences(data)))
+    data = _normalize_crlf(strip_string_sequences(data))
+    return strip_noise(Text.from_ansi(data))
 
 
 def strip_string_sequences(data: str) -> str:
@@ -209,10 +239,11 @@ class AnsiDecoder:
     def _take_partial(self) -> str:
         partial, self._partial = self._partial, ""
         self._partial_since = 0.0
-        return strip_string_sequences(resolve_carriage_returns(partial))
+        return strip_string_sequences(_resolve_line(partial))
 
     def _ingest(self, data: str, complete: bool = False) -> str:
-        data, self._carry = split_incomplete_escape(self._carry + data)
+        data, carry = split_incomplete_escape(self._carry + data)
+        self._carry = carry if len(carry) <= _MAX_CARRY else ""
         if not data:
             return ""
 
@@ -222,6 +253,10 @@ class AnsiDecoder:
 
         if "\n" not in data:
             self._partial += data
+            if len(self._partial) >= _MAX_PARTIAL:
+                # A line this long is not a prompt; stream it rather than
+                # letting a child with no newline exhaust memory.
+                return self._take_partial()
             # Stamp on every arrival, not just the first: a progress bar
             # repainting twice a second must keep resetting this, or the line
             # looks settled and gets released when it is not.
@@ -231,7 +266,7 @@ class AnsiDecoder:
 
         head, _, tail = data.rpartition("\n")
         self._partial += head + "\n"
-        finished = strip_string_sequences(resolve_carriage_returns(self._partial))
+        finished = strip_string_sequences(_resolve_line(self._partial))
         self._partial = tail
         self._partial_since = time.monotonic() if tail else 0.0
         return finished

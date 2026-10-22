@@ -1,6 +1,11 @@
 <h1 align="center">scriptsuite</h1>
 <p align="center"><em>A modern terminal workspace for driving test scripts.</em></p>
 
+[![CI](https://github.com/juanjo850/scriptsuite/actions/workflows/ci.yml/badge.svg)](https://github.com/juanjo850/scriptsuite/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/scriptsuite.svg)](https://pypi.org/project/scriptsuite/)
+[![Python](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13%20|%203.14-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+
 `scriptsuite` scans a `script/` folder, lists everything runnable in a sidebar,
 runs the selected script in a **real pseudo-terminal**, and streams its output
 and stdin interaction back while you watch. The right pane holds that script's
@@ -9,7 +14,7 @@ and stdin interaction back while you watch. The right pane holds that script's
 ![The scriptsuite workspace](docs/screenshot.svg)
 
 <p align="center">
-  <sub>Python 3.11+ · one dependency (Textual) · MIT</sub>
+  <sub>Linux and macOS · Python 3.11+ · Textual + Rich · MIT</sub>
 </p>
 
 ---
@@ -31,7 +36,9 @@ and stdin interaction back while you watch. The right pane holds that script's
   - [Shows the source](#shows-the-source)
 - [Layout](#layout)
 - [Development](#development)
+- [Troubleshooting](#troubleshooting)
 - [Notes](#notes)
+- [Changelog](https://github.com/juanjo850/scriptsuite/blob/main/CHANGELOG.md)
 
 ## Why
 
@@ -42,18 +49,25 @@ printed, and its source — with the run happening in the middle.
 
 ## Install
 
+Requires **Linux or macOS** (the interactive workspace needs a POSIX
+pseudo-terminal) and Python 3.11+.
+
 ```sh
 python -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-The only runtime dependency is [Textual](https://textual.textualize.io/).
+The runtime dependencies are [Textual](https://textual.textualize.io/) and
+[Rich](https://rich.readthedocs.io/), which Textual uses for rendering.
 
 For the development extras (tests, linting, docs):
 
 ```sh
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev,docs]"
 ```
+
+Once a release is published, `pipx install scriptsuite` is the recommended
+way to keep the command on your `PATH`.
 
 ## Use
 
@@ -74,6 +88,11 @@ scriptsuite --list              # print what was discovered, then exit
 found, the interface says which folder it looked at and what it accepts,
 rather than showing an empty list.
 
+`--list` exits with `0` when scripts were found, `1` when the folder contains
+nothing runnable, and `2` when the folder does not exist. The interactive
+workspace needs a POSIX pty; on Windows, `--list` still works and the normal
+launch explains the limitation.
+
 ## Keys
 
 ### Scripts
@@ -85,6 +104,7 @@ rather than showing an empty list.
 | `/` | jump to the filter |
 | `f5` | rescan the folder |
 | `ctrl+a` | run every visible script in sequence |
+| `ctrl+shift+k` | cancel the run-all sequence |
 | `ctrl+p` | command palette |
 | `f1` | key reference |
 | `ctrl+q` | quit |
@@ -94,7 +114,7 @@ rather than showing an empty list.
 | Key | Action |
 |---|---|
 | `ctrl+r` | re-run |
-| `ctrl+k` | stop the run (SIGTERM) |
+| `ctrl+k` | stop the run (SIGTERM, then SIGKILL after a grace period) |
 | `ctrl+c` | interrupt the run (SIGINT) |
 | `ctrl+l` | clear the output |
 
@@ -105,8 +125,16 @@ rather than showing an empty list.
 | `f2` | jump to the input bar (not needed at a prompt) |
 | `enter` | send the line to the script |
 | `↑ ↓` | recall previous input |
-| `f6` | raw mode: forward every keystroke |
-| `escape` | give focus back to the list |
+| `f6` | raw mode: forward keys verbatim |
+| `f6` again | leave raw mode |
+| `escape` | give focus back to the list (line mode) |
+
+In raw mode Escape, Ctrl-C, function keys, arrows and pasted text are forwarded
+to the script byte for byte, which is what full-screen programs expect. Press
+`f6` to leave raw mode. `f1` and `ctrl+q` still open help and quit; in line mode
+the usual editing keys (`←`/`→`, `home`, `end`, `ctrl+u`, `ctrl+k`, …) edit the
+line, so app shortcuts such as `ctrl+a` and `ctrl+k` apply once focus is back on
+the list.
 
 ### Arguments
 
@@ -148,17 +176,19 @@ correctly.
 Reads are decoded incrementally: escape sequences split across reads are
 reassembled and ANSI colour is preserved. A progress bar that repaints with
 `\r` collapses onto one line instead of flooding the log, while an unterminated
-prompt like `Enter your name:` still appears within ~120 ms. A carriage return
-is replayed the way a terminal does — move to column 0, then overwrite — which
-matters because a pty expands a program's `\r\n` into `\r\r\n`.
+prompt like `Enter your name:` still appears within ~120 ms. Carriage returns
+are replayed on the visible text rather than on the escape bytes, so a coloured
+progress bar collapses to its last value instead of showing fragments of the
+escape codes.
 
 ### Summarises results
 
 pytest, unittest and TAP output are parsed into counts and a verdict. The
-verdict overrides the raw exit code, so a suite reporting failures shows as
-failed even when something masks the exit status. Failed test names are pulled
-out for the sidebar. A script that prints nothing gets no invented numbers,
-just its exit code.
+verdict can override a clean exit code, so a suite reporting failures shows as
+failed even when something masks the exit status; a non-zero exit is never
+hidden by a passing-looking summary. Failed test names are pulled out for the
+status line. A script that prints nothing gets no invented numbers, just its
+exit code.
 
 ### Sends input both ways
 
@@ -223,13 +253,18 @@ shrink, below 92 the right pane is hidden until you ask for it with `f9`.
 ## Development
 
 ```sh
-.venv/bin/python -m pytest             # 268 tests
-.venv/bin/ruff check src tests
-.venv/bin/ruff format src tests
+.venv/bin/python -m pytest -m "not integration"   # fast: no child processes
+.venv/bin/python -m pytest                        # full suite, ~2 minutes
+.venv/bin/ruff check src tests tools
+.venv/bin/ruff format src tests tools
 ```
 
-Regenerating the docs, which needs no extra dependencies — `markdown_it` and
-`pygments` both ship with Textual:
+The pty tests use real pseudo-terminals and are marked `integration`. CI runs
+the fast suite on every supported Python on Linux and macOS, then the
+integration suite with a per-test timeout. Coverage is measured with
+`pytest --cov=scriptsuite`.
+
+Regenerating the docs (the `docs` extra provides `markdown_it` and `pygments`):
 
 ```sh
 .venv/bin/python tools/screenshot.py   # docs/screenshot.svg, from the real UI
@@ -250,14 +285,31 @@ Regenerating the docs, which needs no extra dependencies — `markdown_it` and
 a pytest run with deliberate failures, and one that declares `argparse` options
 so the right pane has something to show.
 
+## Troubleshooting
+
+- **`scripts folder not found`** — create `script/`, pass a folder, or set
+  `SCRIPTSUITE_SCRIPTS_DIR`.
+- **A script is listed but does not start** — the interpreter in its shebang
+  (or `node`, `ruby`, … for its extension) must be on `PATH`. Use
+  `-p/--python` to point Python scripts at a specific interpreter.
+- **No colours or a garbled line** — ensure `TERM` is set to a colour-capable
+  terminal. The app sets `TERM=xterm-256color` for children by default.
+- **Windows** — the interactive workspace is POSIX-only; `scriptsuite --list`
+  still works.
+
 ## Notes
 
-- One run at a time; starting a new one retires the previous.
-- Output is capped at 10,000 lines.
+- One run at a time; starting a new one retires and terminates the previous
+  one, and quitting terminates the active child.
+- Output is capped at 10,000 lines; the source pane is capped at 2,000 lines
+  and 512 KB.
 - The sidebar never auto-scrolls away from a run you are watching.
 - `ctrl+a` walks the visible list in order and advances even if a script needs
   to be stopped — it will wait on an interactive script until you stop it.
+  `ctrl+shift+k` cancels the rest of the sequence.
 - Argument values live in memory for the session, so they reset on restart.
+- Stop sends SIGTERM and escalates to SIGKILL after two seconds.
+- Rescanning (`f5`) runs in the background and keeps the current selection.
 
 ---
 

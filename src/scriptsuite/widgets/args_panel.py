@@ -69,14 +69,14 @@ class FieldRow(Vertical):
         layout: horizontal;
     }
     FieldRow > .flagline > Checkbox {
-        width: auto;
+        width: 1fr;
         min-width: 4;
         height: 1;
         border: none;
         background: transparent;
         padding: 0;
         margin-right: 1;
-        text-overflow: clip;
+        text-overflow: ellipsis;
     }
     FieldRow > .flagline > Checkbox:focus {
         background: $boost;
@@ -89,15 +89,30 @@ class FieldRow(Vertical):
     class Changed(Message):
         """A control in this row changed."""
 
-        def __init__(self, field_id: str, value: str | bool) -> None:
+        def __init__(
+            self, script_key: str | None, field_id: str, value: str | bool
+        ) -> None:
             super().__init__()
+            self.script_key = script_key
             self.field_id = field_id
             self.value = value
 
-    def __init__(self, field: Field, value: str | bool = "", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        field: Field,
+        value: str | bool = "",
+        script_key: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.field = field
         self._value = value
+        self.script_key = script_key
+        #: Values pushed in programmatically.  The matching change message is
+        #: still delivered asynchronously, so it cannot be suppressed with a
+        #: simple "currently applying" flag.
+        self._silent_input: str | None = None
+        self._silent_checkbox: bool | None = None
 
     def compose(self) -> ComposeResult:
         label = Static(self._label(), classes="label")
@@ -111,8 +126,9 @@ class FieldRow(Vertical):
         else:
             self.add_class("--flag")
             with Horizontal(classes="flagline"):
-                yield Checkbox("", id=f"arg-{self.field.id}")
-                yield label
+                # The checkbox carries the label so screen readers have a name
+                # for the control instead of an unnamed box.
+                yield Checkbox(self.field.label, id=f"arg-{self.field.id}")
         yield Static(Text(self.field.help, style="grey58"), classes="hint")
 
     def on_mount(self) -> None:
@@ -132,9 +148,20 @@ class FieldRow(Vertical):
         """Set the control without echoing a change back to the app."""
         if self.field.takes_value:
             widget = self.query_one(Input)
-            widget.value = str(value or "")
+            text = str(value or "")
+            if widget.value == text:
+                self._silent_input = None
+                return
+            self._silent_input = text
+            widget.value = text
         else:
-            self.query_one(Checkbox).value = bool(value)
+            widget = self.query_one(Checkbox)
+            checked = bool(value)
+            if bool(widget.value) == checked:
+                self._silent_checkbox = None
+                return
+            self._silent_checkbox = checked
+            widget.value = checked
 
     def current(self) -> str | bool:
         if self.field.takes_value:
@@ -143,11 +170,20 @@ class FieldRow(Vertical):
 
     def _on_input_changed(self, event: Input.Changed) -> None:
         event.stop()
-        self.post_message(self.Changed(self.field.id, event.value))
+        if self._silent_input is not None and event.value == self._silent_input:
+            self._silent_input = None
+            return
+        self.post_message(self.Changed(self.script_key, self.field.id, event.value))
 
     def _on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         event.stop()
-        self.post_message(self.Changed(self.field.id, bool(event.value)))
+        if (
+            self._silent_checkbox is not None
+            and bool(event.value) == self._silent_checkbox
+        ):
+            self._silent_checkbox = None
+            return
+        self.post_message(self.Changed(self.script_key, self.field.id, bool(event.value)))
 
 
 class ArgsPanel(Vertical):
@@ -162,7 +198,7 @@ class ArgsPanel(Vertical):
         padding: 0 1;
         layout: vertical;
     }
-    ArgsPanel:focus {
+    ArgsPanel:focus-within {
         border: none;
         border-left: solid $accent;
     }
@@ -225,8 +261,11 @@ class ArgsPanel(Vertical):
     class ValueChanged(Message):
         """One of the field controls changed."""
 
-        def __init__(self, field_id: str, value: str | bool) -> None:
+        def __init__(
+            self, script_key: str | None, field_id: str, value: str | bool
+        ) -> None:
             super().__init__()
+            self.script_key = script_key
             self.field_id = field_id
             self.value = value
 
@@ -234,6 +273,9 @@ class ArgsPanel(Vertical):
         super().__init__(**kwargs)
         self.key: str | None = None
         self._program = ProgramInfo(language="")
+        #: Summary shown above the fields, used to notice when a rebuild is
+        #: needed even though the field set is unchanged.
+        self._summary_text = ""
         #: Set while values are being pushed in, so echoing them back as
         #: change events would be noise.
         self._muted = False
@@ -292,8 +334,27 @@ class ArgsPanel(Vertical):
         container = self.query("#args-fields")
         if not container:
             return
-        container[0].remove_children()
-        container[0].mount(*self._field_widgets(info, values))
+        box = container[0]
+        fields = self._program.fields() if info is not None else ()
+        summary = self._program.summary if info is not None else ""
+        existing = list(box.query(FieldRow))
+        if (
+            info is not None
+            and existing
+            and self._summary_text == summary
+            and [row.field for row in existing] == list(fields)
+        ):
+            # Same script interface: update values in place so focus, cursor
+            # position and scroll offset survive a highlight change.
+            for row in existing:
+                row.script_key = self.key
+                row.apply(
+                    values.get(row.field.id, "" if row.field.takes_value else False)
+                )
+            return
+        self._summary_text = summary
+        box.remove_children()
+        box.mount(*self._field_widgets(info, values))
 
     def _field_widgets(
         self, info: ScriptInfo | None, values: dict[str, str | bool]
@@ -318,7 +379,7 @@ class ArgsPanel(Vertical):
         if fields:
             for field in fields:
                 default = values.get(field.id, "" if field.takes_value else False)
-                widgets.append(FieldRow(field, default))
+                widgets.append(FieldRow(field, default, script_key=self.key))
         else:
             hint = program.positional_hint or "no options declared"
             widgets.append(
@@ -365,4 +426,6 @@ class ArgsPanel(Vertical):
         event.stop()
         if self._muted:
             return
-        self.post_message(self.ValueChanged(event.field_id, event.value))
+        self.post_message(
+            self.ValueChanged(event.script_key, event.field_id, event.value)
+        )

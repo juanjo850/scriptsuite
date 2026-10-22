@@ -18,7 +18,15 @@ from dataclasses import dataclass, field, replace
 
 #: Actions that never consume a following value.
 FLAG_ACTIONS = frozenset(
-    {"store_true", "store_false", "store_const", "count", "help", "version"}
+    {
+        "store_true",
+        "store_false",
+        "store_const",
+        "append_const",
+        "count",
+        "help",
+        "version",
+    }
 )
 #: Actions that may appear more than once.
 REPEATING_ACTIONS = frozenset({"append", "append_const"})
@@ -39,6 +47,8 @@ _FLAG_WITH_HELP = re.compile(
 _POSITIONAL = re.compile(r"(?:\$argv\((\d+)\)|\$(?:\{(\d+)\}|(\d+))|\$@)")
 #: Tcl keeps its arguments in a list: ``lindex $argv 0``.
 _TCL_ARGV = re.compile(r"\$(?:::)?argv\b")
+#: ``lindex $argv 3`` addresses the fourth argument.
+_TCL_ARGV_INDEX = re.compile(r"\blindex\s+\$?(?:::)?argv\s+(\d+)")
 #: Python without argparse still indexes ``sys.argv`` directly.
 _PY_ARGV = re.compile(r"\b(?:sys\.)?argv\[(\d+)\]")
 
@@ -462,9 +472,9 @@ def _python_option(node: ast.Call) -> tuple[Option | None, Argument | None]:
         )
 
     action = _literal(node, "action") or "store"
-    nargs = _literal(node, "nargs")
+    nargs = _value(node, "nargs")
     takes_value = action not in FLAG_ACTIONS
-    if nargs == 0 or (nargs == "?" and action == "store_const"):
+    if nargs in (0, "0"):
         takes_value = False
 
     choices = _literal_list(node, "choices")
@@ -545,9 +555,12 @@ def _scan_positionals(source: str) -> int | None:
         if index is not None:
             highest = max(highest, int(index))
     if _TCL_ARGV.search(source):
-        # A Tcl list: the count is whatever the caller passed.
+        # A Tcl list: the count is whatever the caller passed.  An explicit
+        # `lindex $argv N` tells us how many fields are actually addressed.
         seen = True
         highest = max(highest, 1)
+        for match in _TCL_ARGV_INDEX.finditer(source):
+            highest = max(highest, int(match.group(1)) + 1)
     if not seen:
         return None
     return highest or 1

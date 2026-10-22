@@ -148,10 +148,21 @@ class ResultParser:
     def __init__(self) -> None:
         self._window = ""
         self.summary = TestSummary()
+        #: TAP is counted cumulatively: lines are parsed once as they arrive,
+        #: so a long stream cannot lose counts when it scrolls out of the
+        #: overlap window.
+        self._tap_passed = 0
+        self._tap_failed = 0
+        self._tap_carry = ""
+        self._tap_seen = False
 
     def reset(self) -> None:
         self._window = ""
         self.summary = TestSummary()
+        self._tap_passed = 0
+        self._tap_failed = 0
+        self._tap_carry = ""
+        self._tap_seen = False
 
     # ------------------------------------------------------------------
 
@@ -160,6 +171,7 @@ class ResultParser:
             return
         combined = self._window + text
         self._consume(combined)
+        self._feed_tap(text)
         self._window = combined[-self.OVERLAP :]
 
     def finalize(self, exit_code: int | None = None) -> TestSummary:
@@ -170,6 +182,9 @@ class ResultParser:
         than something misleading.
         """
         summary = self.summary
+        # A final TAP line may lack its newline.
+        if self._tap_carry:
+            self._feed_tap("\n")
         if not summary.has_data:
             if exit_code is not None:
                 summary.framework = summary.framework or "exit-code"
@@ -199,8 +214,6 @@ class ResultParser:
             return
         if self._parse_unittest(text):
             return
-        if self._parse_tap(text):
-            return
         self._parse_generic(text)
 
     def _parse_failures(self, text: str) -> None:
@@ -228,6 +241,10 @@ class ResultParser:
         strict = list(_PYTEST_SUMMARY.finditer(text))
         if strict:
             summary.framework = "pytest"
+            # The latest summary replaces the previous one; otherwise a runner
+            # that prints two summaries reports the union of both.
+            for attribute in _COUNT_KEYS.values():
+                setattr(summary, attribute, None)
             self._apply_counts(strict[-1].group("counts"), summary)
             if strict[-1].group("duration"):
                 summary.duration = float(strict[-1].group("duration"))
@@ -243,6 +260,8 @@ class ResultParser:
         on_last_line = [match for match in matches if match.start() >= start] or matches[
             -1:
         ]
+        for attribute in _COUNT_KEYS.values():
+            setattr(summary, attribute, None)
         self._apply_counts(" ".join(match.group(0) for match in on_last_line), summary)
 
         tail = _PYTEST_TAIL.search(text[start:])
@@ -286,20 +305,53 @@ class ResultParser:
         return True
 
     def _parse_tap(self, text: str) -> bool:
+        """Count TAP lines in a complete chunk.
+
+        Kept for callers that want a one-shot scan; :meth:`feed` uses the
+        cumulative :meth:`_feed_tap` instead.
+        """
         ok = len(_TAP_OK.findall(text))
         not_ok = len(_TAP_NOT_OK.findall(text))
         if not (ok or not_ok):
             return False
 
-        summary = self.summary
-        summary.framework = summary.framework or "tap"
-        summary.passed = ok
-        summary.failed = not_ok
-
+        self._tap_passed += ok
+        self._tap_failed += not_ok
+        self._tap_seen = True
+        self._publish_tap()
         plan = _TAP_PLAN.search(text)
         if plan:
-            summary.total = int(plan.group(2))
+            self.summary.total = int(plan.group(2))
         return True
+
+    def _feed_tap(self, text: str) -> None:
+        """Parse only newly arrived TAP lines, carrying the last partial line."""
+        data = self._tap_carry + text
+        lines = data.split("\n")
+        self._tap_carry = lines.pop()
+        # A TAP line is short; a huge unterminated line is not TAP and must not
+        # become an unbounded buffer.
+        if len(self._tap_carry) > 4096:
+            self._tap_carry = self._tap_carry[-4096:]
+        for line in lines:
+            if _TAP_NOT_OK.match(line):
+                self._tap_failed += 1
+            elif _TAP_OK.match(line):
+                self._tap_passed += 1
+            else:
+                plan = _TAP_PLAN.match(line)
+                if plan:
+                    self.summary.total = int(plan.group(2))
+                    self._tap_seen = True
+        if self._tap_passed or self._tap_failed:
+            self._tap_seen = True
+        if self._tap_seen:
+            self._publish_tap()
+
+    def _publish_tap(self) -> None:
+        self.summary.framework = self.summary.framework or "tap"
+        self.summary.passed = self._tap_passed
+        self.summary.failed = self._tap_failed
 
     def _parse_generic(self, text: str) -> None:
         summary = self.summary

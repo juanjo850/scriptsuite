@@ -258,3 +258,51 @@ def test_missing_folder_still_resolves(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.delenv("SCRIPTSUITE_SCRIPTS_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     assert resolve_scripts_dir() == (tmp_path / "script").resolve()
+
+
+# -- path and interpreter edge cases ---------------------------------------
+
+
+def test_scripts_under_a_named_ancestor_are_not_all_skipped(tmp_path: Path):
+    # A checkout under `build/`, or a scripts folder inside `.config`, used to
+    # make every file vanish because the absolute path was filtered.
+    root = tmp_path / "build" / ".config" / "script"
+    root.mkdir(parents=True)
+    (root / "a.py").write_text('"""A."""\n')
+    assert [script.rel_path for script in discover(root)] == ["a.py"]
+
+
+def test_versioned_python_shebang_is_python(tmp_path: Path):
+    root = tmp_path / "script"
+    root.mkdir()
+    (root / "tool").write_text("#!/usr/bin/env python3.12\nprint('hi')\n")
+    found = discover(root, python="/opt/python")
+    assert found[0].language == "python"
+    assert found[0].command[0] == "/opt/python"
+
+
+def test_executable_shell_script_without_a_shebang_uses_the_shell(tmp_path: Path):
+    root = tmp_path / "script"
+    root.mkdir()
+    script = root / "run.sh"
+    script.write_text('echo "hi"\n')
+    script.chmod(0o755)
+    found = discover(root)
+    assert found[0].command[0] == "sh"
+    assert found[0].executable is True
+
+
+def test_descendant_execute_bit_counts(tmp_path: Path):
+    root = tmp_path / "script"
+    root.mkdir()
+    script = root / "tool.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    script.chmod(0o705)
+    assert discover(root)[0].executable is True
+
+
+def test_comment_on_the_first_line_is_a_description(tmp_path: Path):
+    root = tmp_path / "script"
+    root.mkdir()
+    (root / "thing.js").write_text("// Says what it does\nconsole.log(1)\n")
+    assert discover(root)[0].description == "Says what it does"

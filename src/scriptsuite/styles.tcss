@@ -128,8 +128,8 @@ Screen.-compact #bottom-pane {
 /* --------------------------------------------------------------- scrollbars */
 
 * {
-    scrollbar-size-vertical: 1;
-    scrollbar-size-horizontal: 1;
+    scrollbar-size-vertical: 2;
+    scrollbar-size-horizontal: 2;
     scrollbar-color: $accent 20%;
     scrollbar-color-hover: $accent 40%;
     scrollbar-color-active: $accent 60%;

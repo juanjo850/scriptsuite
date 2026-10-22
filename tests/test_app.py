@@ -21,7 +21,7 @@ from scriptsuite.widgets.output_pane import OutputPane
 from scriptsuite.widgets.source_view import SourceView
 from scriptsuite.widgets.status_bar import StatusBar
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -501,7 +501,7 @@ async def test_a_later_prompt_reclaims_focus_after_escape(talker: Path):
         await wait_for_idle(instance, pilot)
 
 
-async def test_raw_mode_turns_off_on_escape(talker: Path):
+async def test_raw_mode_turns_off_with_f6(talker: Path):
     instance = ScriptSuiteApp(scripts_dir=talker)
     async with instance.run_test(size=(140, 40)) as pilot:
         for _ in range(40):
@@ -516,7 +516,7 @@ async def test_raw_mode_turns_off_on_escape(talker: Path):
         await pilot.pause()
         bar = instance.query_one("#stdin-input")
         bar.raw = True
-        await pilot.press("escape")
+        await pilot.press("f6")
         await pilot.pause()
         assert bar.raw is False
         instance.action_stop()
@@ -773,6 +773,31 @@ async def test_rescan_picks_up_a_new_script(app):
     assert any(info.name == "added" for info in instance.scripts)
 
 
+async def test_rescan_keeps_the_selection_and_run_badges(app):
+    instance, pilot = app
+    await run_script(instance, pilot, "hello")
+    target = next(script for script in instance.scripts if script.name == "hello")
+    assert instance.states[target.key] is RunState.PASSED
+    instance.query_one("#sidebar-list").focus_script(target.key)
+    await pilot.pause()
+
+    (instance.scripts_dir / "zzz.py").write_text('"""Zed."""\nprint("z")\n')
+    instance.action_rescan()
+    for _ in range(80):
+        await pilot.pause(0.05)
+        if any(script.name == "zzz" for script in instance.scripts):
+            break
+    await pilot.pause()
+
+    sidebar = instance.query_one("#sidebar-list")
+    assert sidebar.current_info is not None
+    assert sidebar.current_info.name == "hello"
+    assert instance.states[target.key] is RunState.PASSED
+    row = sidebar.row_for(target.key)
+    assert row is not None
+    assert row.state is RunState.PASSED
+
+
 async def test_filter_narrows_the_list(app):
     instance, pilot = app
     sidebar = instance.query_one("#sidebar-list")
@@ -780,6 +805,21 @@ async def test_filter_narrows_the_list(app):
     await pilot.pause()
     await pilot.pause()
     assert [info.name for info in sidebar.visible_scripts()] == ["hello"]
+
+
+async def test_j_and_k_move_the_sidebar_cursor(app):
+    instance, pilot = app
+    sidebar = instance.query_one("#sidebar-list")
+    sidebar.focus()
+    await pilot.pause()
+    start = sidebar.index
+    await pilot.press("j")
+    await pilot.pause()
+    assert sidebar.index == start + 1
+    assert instance.current is sidebar.current_info
+    await pilot.press("k")
+    await pilot.pause()
+    assert sidebar.index == start
 
 
 async def test_filter_clearing_restores_the_list(app):
@@ -1028,6 +1068,34 @@ async def test_run_all_only_touches_visible_scripts(app):
     assert len(instance.states) == 1
     target = next(i for i in instance.scripts if i.name == "hello")
     assert instance.states.get(target.key) is RunState.PASSED
+
+
+async def test_cancelling_a_suite_does_not_start_the_next_script(tmp_path: Path):
+    root = tmp_path / "mixed"
+    root.mkdir()
+    (root / "a_quick.py").write_text('"""Quick."""\nprint("done")\n')
+    (root / "b_slow.py").write_text('"""Slow."""\nimport time\ntime.sleep(120)\n')
+    (root / "c_after.py").write_text('"""After."""\nprint("after")\n')
+
+    instance = ScriptSuiteApp(scripts_dir=root)
+    async with instance.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        instance.action_run_all()
+        for _ in range(300):
+            await pilot.pause(0.05)
+            if instance.active is not None and instance.active.key.endswith("b_slow.py"):
+                break
+        instance.action_cancel_suite()
+        for _ in range(300):
+            await pilot.pause(0.05)
+            if not instance.suite_running and instance.active is None:
+                break
+        await pilot.pause(0.2)
+
+        assert instance.suite_running is False
+        states = {i.name: instance.states.get(i.key) for i in instance.scripts}
+        assert states["b_slow"] is RunState.ABORTED
+        assert states.get("c_after") is None
 
 
 async def test_stopping_a_script_advances_the_suite(tmp_path: Path):

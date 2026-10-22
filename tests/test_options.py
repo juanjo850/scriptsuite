@@ -495,3 +495,37 @@ def test_split_arguments_survives_broken_quoting():
     tokens, problem = split_arguments('--out "unclosed')
     assert tokens  # still usable, so the run is not blocked
     assert problem is not None
+
+
+# -- argparse actions and Tcl indexes --------------------------------------
+
+
+def test_append_const_is_a_flag(tmp_path: Path):
+    path = write(
+        tmp_path,
+        "import argparse\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--debug', action='append_const', const=1)\n",
+    )
+    option = describe(path, "python").options[0]
+    assert option.flags == ("--debug",)
+    assert option.takes_value is False
+
+
+def test_nargs_zero_is_not_a_value(tmp_path: Path):
+    path = write(
+        tmp_path,
+        "import argparse\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--now', nargs=0)\n",
+    )
+    assert describe(path, "python").options[0].takes_value is False
+
+
+def test_tcl_lindex_reveals_the_positional_count(tmp_path: Path):
+    path = write(
+        tmp_path,
+        "set first [lindex $argv 0]\nset fourth [lindex $argv 3]\n",
+        name="s.tcl",
+    )
+    assert describe(path, "tcl").positional_count == 4

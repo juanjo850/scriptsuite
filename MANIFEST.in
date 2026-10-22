@@ -1,0 +1,8 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include Makefile
+recursive-include docs *.html *.svg
+recursive-include script *.py *.sh
+recursive-include tools *.py
+recursive-include tests *.py

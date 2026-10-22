@@ -60,7 +60,7 @@ class SourceView(Vertical):
         padding: 0 1;
         layout: vertical;
     }
-    SourceView:focus {
+    SourceView:focus-within {
         border: round $accent;
     }
     SourceView > .head {
@@ -193,15 +193,17 @@ def _lexer_for(info: ScriptInfo) -> str:
 def _read(info: ScriptInfo) -> tuple[str, str]:
     """The file's text, plus a note if it was cut short or could not be read."""
     try:
-        size = info.size
-        raw = info.path.read_text(encoding="utf-8", errors="replace")
+        # Read one byte past the limit so "too large" is detected without
+        # pulling a multi-gigabyte file into memory first.
+        with info.path.open("rb") as handle:
+            raw_bytes = handle.read(MAX_BYTES + 1)
     except OSError as exc:
         return "", f"could not read ({exc.strerror or exc})"
 
-    note = ""
-    if size > MAX_BYTES:
-        raw = raw[:MAX_BYTES]
-        note = "file too large, showing the start"
+    too_large = len(raw_bytes) > MAX_BYTES
+    raw = raw_bytes[:MAX_BYTES].decode("utf-8", errors="replace")
+
+    note = "file too large, showing the start" if too_large else ""
 
     lines = raw.splitlines()
     if len(lines) > MAX_LINES:

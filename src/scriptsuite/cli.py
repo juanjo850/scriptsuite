@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -70,6 +71,11 @@ def _selected_dir(args: argparse.Namespace) -> Path:
 
 
 def _print_list(scripts_dir: Path, python: str | None, recursive: bool) -> int:
+    # Descriptions can contain arbitrary Unicode from a script's docstring; a
+    # redirected or ASCII-locale stdout must not crash the listing.
+    with contextlib.suppress(AttributeError, ValueError):
+        sys.stdout.reconfigure(errors="replace")
+
     if not scripts_dir.is_dir():
         print(f"scriptsuite: no such folder: {scripts_dir}", file=sys.stderr)
         return 2
@@ -105,17 +111,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return _print_list(scripts_dir, python, not args.no_recursive)
 
-    try:
-        from .app import ScriptSuiteApp
-    except ImportError as exc:  # pragma: no cover - guidance for bare installs
+    if sys.platform == "win32":  # pragma: no cover - platform-specific
         print(
-            f"scriptsuite: missing dependency ({exc}).\n"
-            "Install it with:  pip install textual",
+            "scriptsuite: the interactive workspace needs a POSIX pseudo-terminal.\n"
+            "Supported platforms: Linux and macOS.  `scriptsuite --list` still works.",
             file=sys.stderr,
         )
         return 1
 
-    app = ScriptSuiteApp(scripts_dir=scripts_dir, python=python)
+    try:
+        from .app import ScriptSuiteApp
+    except ModuleNotFoundError as exc:  # pragma: no cover - bare installs
+        # Only translate a genuinely missing runtime dependency; a typo or a
+        # broken sibling module should keep its real traceback.
+        if exc.name not in {"textual", "rich"}:
+            raise
+        print(
+            f"scriptsuite: missing dependency ({exc.name}).\n"
+            "Install it with:  pip install textual rich",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = ScriptSuiteApp(
+        scripts_dir=scripts_dir,
+        python=python,
+        recursive=not args.no_recursive,
+    )
     app.run()
     return 0
 

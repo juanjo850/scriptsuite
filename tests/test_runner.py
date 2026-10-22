@@ -10,7 +10,7 @@ import pytest
 
 from scriptsuite.runner import RunState, ScriptRun, run_once
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def python(code: str) -> list[str]:
@@ -416,3 +416,31 @@ async def test_large_output_survives_intact():
     collector = Collector()
     await run(python("print('x' * 200000)"), collector=collector)
     assert collector.text.strip() == "x" * 200000
+
+
+async def test_a_finished_run_releases_its_pty():
+    # Regression: the TUI path used to drop the ScriptRun without calling
+    # close(), leaking one fd per run until no script could start.
+    finished, _ = await run(python("print('done')"))
+    assert finished._master is None
+    assert finished.pid is not None
+
+
+async def test_master_is_non_blocking():
+    script = ScriptRun(key="nb", argv=python("import time; time.sleep(5)"))
+    await script.start()
+    try:
+        assert os.get_blocking(script._master) is False
+    finally:
+        script.terminate(force=True)
+        await script.wait()
+
+
+async def test_stop_requested_before_start_is_not_lost():
+    # The UI sets `active` before its worker calls start(); a stop in that
+    # window must still kill the child instead of letting it run to completion.
+    script = ScriptRun(key="early", argv=python("import time; time.sleep(30)"))
+    script.terminate()
+    assert await script.start() is True
+    await asyncio.wait_for(script.wait(), timeout=5)
+    assert script.state is RunState.ABORTED

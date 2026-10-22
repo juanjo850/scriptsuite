@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -59,7 +60,7 @@ PALETTE = {
     "panel": "#16161e",
     "boost": "#24283b",
     "text": "#c0caf5",
-    "text-muted": "#6b7394",
+    "text-muted": "#8b93b8",
     "border": "#2f344d",
     "success": "#9ece6a",
     "warning": "#e0af68",
@@ -89,7 +90,8 @@ class ScriptSuiteApp(App[None]):
         Binding("ctrl+q", "quit", "Quit", priority=True),
         Binding("ctrl+r", "rerun", "Re-run", show=True),
         Binding("ctrl+k", "stop", "Stop", show=True),
-        Binding("ctrl+c", "interrupt", "Interrupt", priority=True, show=True),
+        Binding("ctrl+c", "interrupt", "Interrupt", show=True),
+        Binding("ctrl+shift+k", "cancel_suite", "Cancel suite", show=False),
         Binding("ctrl+l", "clear_output", "Clear", show=True),
         Binding("ctrl+a", "run_all", "Run all", show=False),
         Binding("f1", "help", "Keys", show=True, priority=True),
@@ -102,10 +104,14 @@ class ScriptSuiteApp(App[None]):
         Binding("f9", "toggle_right", "Right", show=False),
         Binding("f10", "toggle_bottom", "Bottom", show=False),
         Binding("f11", "toggle_sidebar", "Sidebar", show=False),
+        Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
 
     def __init__(
-        self, scripts_dir: Path | None = None, python: str | None = None
+        self,
+        scripts_dir: Path | None = None,
+        python: str | None = None,
+        recursive: bool = True,
     ) -> None:
         super().__init__()
         # Absolute, always: the child runs with cwd set to the scripts folder,
@@ -114,6 +120,7 @@ class ScriptSuiteApp(App[None]):
             (scripts_dir or resolve_scripts_dir()).expanduser().resolve()
         )
         self.python_override = python
+        self.recursive = recursive
 
         self.scripts: list[ScriptInfo] = []
         self.current: ScriptInfo | None = None
@@ -138,7 +145,11 @@ class ScriptSuiteApp(App[None]):
         self._input_left = False
         self._queue: list[ScriptInfo] = []
         self._suite: list[ScriptInfo] = []
+        self._suite_active = False
+        self._suite_cancelled = False
         self._generation = 0
+        #: Grace timer that escalates a stop to SIGKILL.
+        self._kill_timer: Any = None
 
         # Widget handles, resolved once on mount to keep the hot path cheap.
         self._sidebar: ScriptList | None = None
@@ -190,6 +201,7 @@ class ScriptSuiteApp(App[None]):
         self._sidebar_header = self.query_one(SidebarHeader)
         self._args = self.query_one("#right-pane", ArgsPanel)
         self._source = self.query_one("#bottom-pane", SourceView)
+        self._sidebar.state_for = self._row_state
 
         self.set_interval(FLUSH_INTERVAL, self._flush_output)
         self.set_interval(TICK_INTERVAL, self._tick)
@@ -300,8 +312,9 @@ class ScriptSuiteApp(App[None]):
     def _on_arg_field_changed(self, event: ArgsPanel.ValueChanged) -> None:
         """A field or checkbox in the pane was edited."""
         event.stop()
-        if self._args is not None and self._args.key:
-            self.arguments.setdefault(self._args.key, {})[event.field_id] = event.value
+        key = event.script_key
+        if key and self._args is not None and self._args.key == key:
+            self.arguments.setdefault(key, {})[event.field_id] = event.value
 
     @on(Input.Changed, "#args-input")
     def _on_extra_changed(self, event: Input.Changed) -> None:
@@ -313,8 +326,18 @@ class ScriptSuiteApp(App[None]):
         """Jump to the first argument control for the highlighted script."""
         if self._args is None:
             return
+        right = self.query_one("#right-pane")
+        if not right.display or self.screen.has_class("-compact"):
+            self._set_message("right pane is hidden · f9 to show it", "#e0af68")
+            return
         rows = self._args.query(FieldRow)
         if rows:
+            # The checkbox in a flag row lives inside `.flagline`, so look
+            # recursively rather than only at direct children.
+            for control in rows[0].query("Input, Checkbox"):
+                if control.can_focus:
+                    control.focus()
+                    return
             for control in rows[0].children:
                 if control.can_focus:
                     control.focus()
@@ -341,42 +364,45 @@ class ScriptSuiteApp(App[None]):
     # ------------------------------------------------------------------
 
     def action_rescan(self) -> None:
-        """Re-scan the scripts folder and refresh the sidebar."""
+        """Re-scan the scripts folder in the background and refresh the sidebar."""
         self._set_message("scanning…")
+        self.run_worker(self._rescan(), name="scanner", group="scan", exclusive=True)
+
+    async def _rescan(self) -> None:
         skipped: list[str] = []
-        found = discover(
+        found = await asyncio.to_thread(
+            discover,
             self.scripts_dir,
-            python=self.python_override,
-            collect_skipped=skipped,
+            self.python_override,
+            self.recursive,
+            skipped,
         )
         self.scripts = found
-        self._sidebar.set_scripts(found)  # type: ignore[union-attr]
-
-        self._refresh_rows()
+        if self._sidebar is not None:
+            self._sidebar.set_scripts(found)
         self._update_counts()
 
         if not found:
             self._show_empty_dir(skipped)
             self._set_message(f"no runnable scripts in {self.scripts_dir}", "#e0af68")
         else:
-            self._clear_output()
             self._set_message(f"{len(found)} script(s) · {self.scripts_dir}")
 
         if self.current is not None:
             previous = self.current.key
             self.current = next((info for info in found if info.key == previous), None)
+        if self.current is None and found:
+            self.current = found[0]
 
         self._show_source(self.current)
+        self._show_args(self.current)
 
-    def _refresh_rows(self) -> None:
-        assert self._sidebar is not None
-        for row in self._sidebar.rows():
-            key = row.info.key
-            summary = self.summaries.get(key)
-            row.set_state(
-                self.states.get(key, RunState.IDLE),
-                summary.summary_line() if summary else None,
-            )
+    def _row_state(self, key: str) -> tuple[RunState, str | None]:
+        summary = self.summaries.get(key)
+        return (
+            self.states.get(key, RunState.IDLE),
+            summary.summary_line() if summary else None,
+        )
 
     def _update_counts(self) -> None:
         assert self._sidebar is not None and self._sidebar_header is not None
@@ -404,6 +430,15 @@ class ScriptSuiteApp(App[None]):
     def _on_filter_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         self._sidebar.focus()  # type: ignore[union-attr]
+
+    def action_clear_filter(self) -> None:
+        """Escape in the filter box clears it instead of doing nothing."""
+        if self._filter is None or not self._filter.has_focus:
+            return
+        if self._filter.value:
+            self._filter.value = ""
+        if self._sidebar is not None:
+            self._sidebar.focus()
 
     @on(InputBar.Dismiss)
     def _on_stdin_dismissed(self, event: InputBar.Dismiss) -> None:
@@ -450,21 +485,35 @@ class ScriptSuiteApp(App[None]):
         if info is None:
             self._set_message("no script selected", "#e0af68")
             return
+        # A manual run replaces the suite rather than leaving a stale queue
+        # that would resume later.
+        self._cancel_suite(quiet=True)
         self._start(info)
 
     def action_run_all(self) -> None:
         """Run every visible script in sequence, then report the totals."""
         assert self._sidebar is not None
-        queue = self._sidebar.visible_scripts() or list(self.scripts)
+        queue = self._sidebar.visible_scripts()
         if not queue:
-            self._set_message("nothing to run", "#e0af68")
+            # An empty filter result means "nothing visible", not "everything".
+            self._set_message("nothing visible to run", "#e0af68")
             return
+        self._cancel_kill_timer()
+        if self.active is not None and not self.active.done:
+            self.active.terminate(force=True)
+            self.active.close()
+            self.active = None
         self._suite = list(queue)
         self._queue = list(queue)
+        self._suite_active = True
+        self._suite_cancelled = False
         self._set_message(f"suite · 1/{len(self._queue)}", "#7aa2f7")
         self._run_next_in_queue()
 
     def _run_next_in_queue(self) -> None:
+        if self._suite_cancelled:
+            self._finish_suite(cancelled=True)
+            return
         if not self._queue:
             self._finish_suite()
             return
@@ -477,9 +526,18 @@ class ScriptSuiteApp(App[None]):
     @property
     def suite_running(self) -> bool:
         """True while a run-all sequence is in progress."""
-        return bool(self._queue)
+        return self._suite_active
 
-    def _finish_suite(self) -> None:
+    def _cancel_suite(self, quiet: bool = False) -> None:
+        """Stop a run-all sequence without starting the next script."""
+        was_active = self._suite_active
+        self._suite_active = False
+        self._suite_cancelled = True
+        self._queue.clear()
+        if was_active and not quiet:
+            self._set_message("suite cancelled", "#e0af68")
+
+    def _finish_suite(self, cancelled: bool = False) -> None:
         passed = sum(
             1 for info in self._suite if self.states.get(info.key) is RunState.PASSED
         )
@@ -489,9 +547,10 @@ class ScriptSuiteApp(App[None]):
         other = len(self._suite) - passed - failed
         colour = "#9ece6a" if failed == 0 else "#f7768e"
         suffix = f" · {other} not run" if other else ""
-        self._set_message(
-            f"suite finished · {passed} passed · {failed} failed{suffix}", colour
-        )
+        prefix = "suite cancelled" if cancelled else "suite finished"
+        self._suite_active = False
+        self._queue.clear()
+        self._set_message(f"{prefix} · {passed} passed · {failed} failed{suffix}", colour)
 
     def _selected(self) -> ScriptInfo | None:
         if self._sidebar is not None:
@@ -508,12 +567,21 @@ class ScriptSuiteApp(App[None]):
 
         # Retire any in-flight run so its callback cannot clobber this state.
         self._generation += 1
-        if self.active is not None and self.active.running:
-            self.active.terminate()
-            self.active.close()
+        generation = self._generation
+        previous = self.active
+        # Detach first: callbacks from the old run are ignored from here on.
         self.active = None
+        self._cancel_kill_timer()
+        if previous is not None:
+            # `running` is false for a run whose worker has not called start()
+            # yet; terminate(force=True) still leaves a pending SIGKILL so it
+            # cannot spawn a child after we have moved on.
+            previous.terminate(force=True)
+            previous.close()
 
         self.parser.reset()
+        self._pending = Text()
+        self._pending_chars = 0
         self._input_left = False
         self.states[info.key] = RunState.RUNNING
         self.summaries.pop(info.key, None)
@@ -538,7 +606,7 @@ class ScriptSuiteApp(App[None]):
             argv=argv,
             cwd=str(self.scripts_dir),
             env=self._child_env(),
-            on_output=self._on_output,
+            on_output=lambda text: self._on_output(text, generation),
             on_finished=lambda finished: self._on_run_finished(finished, on_done),
             size=self._pane_size(),
         )
@@ -553,10 +621,15 @@ class ScriptSuiteApp(App[None]):
         self.run_worker(self._drive_run(run), name="run-driver", group="driver")
 
     async def _drive_run(self, run: ScriptRun) -> None:
-        if not await run.start():
-            return
-        self.call_after_refresh(self._push_size, run)
-        await run.wait()
+        try:
+            if not await run.start():
+                return
+            self.call_after_refresh(self._push_size, run)
+            await run.wait()
+        finally:
+            # `_finish` closes the pty, but keep this as a backstop for an
+            # unexpected exception in the driver.
+            run.close()
 
     def _child_env(self) -> dict[str, str]:
         rows, cols = self._pane_size()
@@ -571,8 +644,10 @@ class ScriptSuiteApp(App[None]):
 
     # -- pty callbacks --------------------------------------------------
 
-    def _on_output(self, text: Text) -> None:
+    def _on_output(self, text: Text, generation: int) -> None:
         """Called from the pty reader; batch writes for a smooth repaint."""
+        if generation != self._generation:
+            return
         self._pending.append_text(text)
         self._pending_chars += len(text.plain)
         if self._pending_chars >= FLUSH_CHARS:
@@ -595,11 +670,15 @@ class ScriptSuiteApp(App[None]):
         if self.active is not run:
             return
 
+        self._cancel_kill_timer()
         self._flush_output()
         summary = self.parser.finalize(run.stats.exit_code)
         state = self._reconcile(run.state, summary)
 
-        info = next((item for item in self.scripts if item.key == run.key), self.current)
+        # Match strictly on the run's own key.  Falling back to `current` would
+        # attribute a result to whichever script happens to be highlighted now,
+        # which can be a different script after F5 or arrow-key navigation.
+        info = next((item for item in self.scripts if item.key == run.key), None)
         if info is not None:
             self.states[info.key] = state
             self.summaries[info.key] = summary
@@ -611,7 +690,10 @@ class ScriptSuiteApp(App[None]):
                 self._sidebar.focus()
         self._set_stdin_enabled(False, info)
         self._set_status_state(state, info)
-        self._set_message(*self._result_message(info, state, summary, run))
+        if info is not None:
+            self._set_message(*self._result_message(info, state, summary, run))
+        else:
+            self._set_message(f"run finished · {state.label}", _COLOURS.get(state, ""))
         self._update_header()
 
         self.active = None
@@ -620,13 +702,18 @@ class ScriptSuiteApp(App[None]):
 
     @staticmethod
     def _reconcile(state: RunState, summary: TestSummary) -> RunState:
-        """Let a parsed verdict correct the raw exit code."""
+        """Let a parsed verdict correct the raw exit code, but not hide a crash.
+
+        A suite that reports success and then exits non-zero (a teardown crash,
+        a missing dependency in the runner) is still a failed run.  The
+        opposite is allowed: a runner that reports failures but exits 0.
+        """
         if state in (RunState.ABORTED, RunState.IDLE):
             return state
         if summary.ok is None:
             return state
         if summary.ok:
-            return RunState.PASSED
+            return RunState.FAILED if state is RunState.FAILED else RunState.PASSED
         return RunState.FAILED
 
     def _result_message(
@@ -641,6 +728,10 @@ class ScriptSuiteApp(App[None]):
             return f"{name} aborted", "#e0af68"
 
         detail = summary.summary_line()
+        if summary.failures:
+            names = ", ".join(summary.failures[:2])
+            more = "…" if len(summary.failures) > 2 else ""
+            detail = f"{detail} · {names}{more}" if detail else names
         if not detail and run.stats.exit_code is not None:
             detail = f"exit {run.stats.exit_code}"
         suffix = f" · {detail}" if detail else ""
@@ -742,11 +833,40 @@ class ScriptSuiteApp(App[None]):
     # ------------------------------------------------------------------
 
     def action_stop(self) -> None:
-        if self.active is None or not self.active.running:
+        if self.active is None or self.active.done:
             self._set_message("nothing is running", "#e0af68")
             return
-        self.active.terminate()
+        self._terminate_with_escalation()
         self._set_message("stopping…", "#e0af68")
+
+    def action_cancel_suite(self) -> None:
+        """Stop the whole run-all sequence, not just the current script."""
+        if not self._suite_active:
+            self.action_stop()
+            return
+        self._cancel_suite()
+        if self.active is not None and not self.active.done:
+            self._terminate_with_escalation()
+
+    def _terminate_with_escalation(self) -> None:
+        """SIGTERM now; SIGKILL if the run has not finished shortly after."""
+        run = self.active
+        if run is None:
+            return
+        self._cancel_kill_timer()
+        run.terminate()
+        self._kill_timer = self.set_timer(2.0, lambda: self._force_kill(run))
+
+    def _force_kill(self, run: ScriptRun) -> None:
+        self._kill_timer = None
+        if self.active is run and not run.done:
+            run.terminate(force=True)
+            self._set_message("force-killed the run", "#f7768e")
+
+    def _cancel_kill_timer(self) -> None:
+        if self._kill_timer is not None:
+            self._kill_timer.stop()
+            self._kill_timer = None
 
     def action_interrupt(self) -> None:
         if self.active is not None and self.active.running:
@@ -775,10 +895,17 @@ class ScriptSuiteApp(App[None]):
         if self._stdin is None or self._stdin.disabled:
             self._set_message("start a script to send it input", "#e0af68")
             return
-        self._stdin.raw = not self._stdin.raw
+        if self._stdin.raw:
+            self._stdin.raw = False
+        else:
+            self._stdin.action_toggle_raw()
         self._stdin.focus()
 
     def action_help(self) -> None:
+        # Pressing F1 while help is open must close it, not stack another copy.
+        if isinstance(self.screen, HelpScreen):
+            self.screen.dismiss(None)
+            return
         self.push_screen(HelpScreen())
 
     def action_toggle_source_max(self) -> None:
@@ -786,6 +913,7 @@ class ScriptSuiteApp(App[None]):
         self.screen.set_class(not self.screen.has_class("-source-max"), "-source-max")
         maximized = self.screen.has_class("-source-max")
         self._set_message("source pane expanded" if maximized else "source pane restored")
+        self._resize_active()
 
     def action_toggle_right(self) -> None:
         self._toggle_pane("#right-pane", "right pane")
@@ -801,6 +929,7 @@ class ScriptSuiteApp(App[None]):
         pane.display = not pane.display
         self._set_status_keys()
         self._set_message(f"{name} {'hidden' if not pane.display else 'shown'}")
+        self._resize_active()
 
     # ------------------------------------------------------------------
     # Geometry
@@ -816,10 +945,25 @@ class ScriptSuiteApp(App[None]):
     def _push_size(self, run: ScriptRun) -> None:
         run.resize(*self._pane_size())
 
-    def on_resize(self) -> None:
-        self._apply_responsive_classes()
+    def _resize_active(self) -> None:
+        """Push the new viewport after a layout change, not just a resize."""
         if self.active is not None and self.active.running:
             self.call_after_refresh(self._push_size, self.active)
+
+    def on_resize(self) -> None:
+        self._apply_responsive_classes()
+        self._resize_active()
+
+    def on_unmount(self) -> None:
+        """Do not leave a child, its process group, or its pty behind on quit."""
+        self._cancel_kill_timer()
+        run = self.active
+        self.active = None
+        if run is not None:
+            # A run may still be waiting for its worker to call start(); the
+            # pending force-stop stops it from spawning after shutdown.
+            run.terminate(force=True)
+            run.close()
 
     def _apply_responsive_classes(self) -> None:
         """Tag the screen so the stylesheet can shed width when space is tight."""
@@ -848,7 +992,9 @@ class ScriptSuiteApp(App[None]):
             ("f5", "rescan"),
             ("f1", "keys"),
         ]
-        if self.query_one("#right-pane").display:
+        if self.query_one("#right-pane").display and not self.screen.has_class(
+            "-compact"
+        ):
             keys.append(("f9", "right"))
         if self.query_one("#bottom-pane").display:
             keys.append(("f10", "bottom"))

@@ -222,5 +222,25 @@ def test_reset_discards_a_partial_escape_and_partial_line():
     assert decoder.feed(b"1mred\n") == "1mred\n"
 
 
+def test_coloured_progress_bar_collapses_to_the_last_value():
+    # The CR is replayed after ANSI parsing: escape bytes must not count as
+    # columns or the bar renders as "100%m50%".
+    text = to_text("\x1b[32m50%\x1b[0m\r100%\n")
+    assert text.plain == "100%\n"
+
+
+def test_huge_line_without_a_newline_is_released():
+    decoder = AnsiDecoder()
+    produced = decoder.feed(b"x" * 1_000_010)
+    assert produced
+    assert decoder.pending() == ""
+
+
+def test_malformed_escape_sequence_cannot_grow_without_bound():
+    decoder = AnsiDecoder()
+    assert decoder.feed(b"\x1b]" + b"x" * 20_000) == ""
+    assert len(decoder.pending()) < 20_000
+
+
 def test_to_text_of_empty_is_empty():
     assert to_text("").plain == ""

@@ -36,8 +36,6 @@ _READ_SIZE = 65536
 _REAP_INTERVAL = 0.04
 #: How long to keep reading after the child is reaped, to catch a last line.
 _SETTLE_SECONDS = 0.25
-#: Grace before an unterminated line is shown and read as a prompt.
-_PROMPT_GRACE = 0.12
 
 #: EOF is reported as EIO on Linux once the child side is gone.
 _EOF_ERRNOS = {errno.EIO}
@@ -102,10 +100,12 @@ FinishedCallback = Callable[["ScriptRun"], None]
 
 def set_winsize(fd: int, rows: int, cols: int) -> None:
     """Push a window size onto a pty so the child can redraw itself."""
+    # ``struct`` packs these as unsigned shorts; clamping avoids a struct.error
+    # on an absurd terminal size (which is not an OSError).
+    rows = max(1, min(rows, 65535))
+    cols = max(1, min(cols, 65535))
     with contextlib.suppress(OSError):
-        fcntl.ioctl(
-            fd, termios.TIOCSWINSZ, struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
-        )
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 def _configure_slave(fd: int) -> None:
@@ -154,6 +154,9 @@ class ScriptRun:
         self._finished = False
         self._prompt_waiting = False
         self._watcher_installed = False
+        self._writer_installed = False
+        #: Bytes accepted by :meth:`write` but not yet taken by the pty.
+        self._write_buffer = bytearray()
 
     # -- properties -----------------------------------------------------
 
@@ -164,6 +167,16 @@ class ScriptRun:
     @property
     def running(self) -> bool:
         return self.state.is_active
+
+    @property
+    def done(self) -> bool:
+        """True once the run can no longer produce output.
+
+        ``running`` is false both before :meth:`start` (state ``IDLE``) and
+        after it finishes, so callers that must not miss a very early stop
+        need this distinction.
+        """
+        return self.state in (RunState.PASSED, RunState.FAILED, RunState.ABORTED)
 
     @property
     def awaiting_input(self) -> bool:
@@ -197,9 +210,17 @@ class ScriptRun:
             master, slave = pty.openpty()
         except OSError as exc:  # pragma: no cover - pty exhausted
             self.stats.error = f"cannot allocate pty: {exc}"
+            self.stats.finished_at = time.monotonic()
             self.state = RunState.ABORTED
+            # Funnel through the normal completion path so the UI never stays
+            # stuck on `running` when a pty cannot be allocated.
+            self._emit_error()
             return False
 
+        # The event loop reads and the UI writes from the main thread; a
+        # blocking master would freeze the whole interface as soon as the child
+        # stops reading or a grandchild keeps the slave open.
+        os.set_blocking(master, False)
         _configure_slave(slave)
         set_winsize(master, *self._size)
 
@@ -231,6 +252,14 @@ class ScriptRun:
             self.state = RunState.ABORTED
             self._emit_error()
             return False
+        except (ValueError, subprocess.SubprocessError) as exc:
+            os.close(master)
+            os.close(slave)
+            self.stats.error = f"cannot start {self.argv[0]}: {exc}"
+            self.stats.finished_at = time.monotonic()
+            self.state = RunState.ABORTED
+            self._emit_error()
+            return False
 
         os.close(slave)
 
@@ -239,7 +268,15 @@ class ScriptRun:
         self.state = RunState.RUNNING
 
         loop = asyncio.get_running_loop()
-        loop.add_reader(master, self._readable)
+        try:
+            loop.add_reader(master, self._readable)
+        except (RuntimeError, ValueError, OSError) as exc:  # pragma: no cover
+            self.terminate(force=True)
+            self.stats.error = f"cannot watch pty: {exc}"
+            self.stats.finished_at = time.monotonic()
+            self.state = RunState.ABORTED
+            self._emit_error()
+            return False
         self._watcher_installed = True
 
         if pending_stop is not None:
@@ -352,19 +389,46 @@ class ScriptRun:
             self._prompt_waiting = True
 
     def write(self, data: str | bytes) -> None:
-        """Send keystrokes to the child.  Never raises."""
-        master = self._master
-        if master is None:
+        """Send keystrokes to the child.  Never raises and never blocks.
+
+        The master is non-blocking, so a full pty input buffer must not spin or
+        stall the UI.  Leftover bytes are queued and written when the loop says
+        the fd is ready again.
+        """
+        if self._master is None:
             return
         payload = data.encode() if isinstance(data, str) else data
-        while payload:
+        if not payload:
+            return
+        self._write_buffer.extend(payload)
+        self._flush_writes()
+
+    def _flush_writes(self) -> None:
+        master = self._master
+        if master is None:
+            self._write_buffer.clear()
+            return
+        while self._write_buffer:
             try:
-                written = os.write(master, payload)
+                written = os.write(master, self._write_buffer)
             except (BlockingIOError, InterruptedError):
-                continue
+                break
             except OSError:
-                return
-            payload = payload[written:]
+                self._write_buffer.clear()
+                break
+            if written <= 0:  # pragma: no cover - defensive
+                break
+            del self._write_buffer[:written]
+
+        if not self._write_buffer:
+            self._remove_writer()
+        elif not self._writer_installed:
+            with contextlib.suppress(RuntimeError, ValueError, OSError):
+                asyncio.get_running_loop().add_writer(master, self._writable)
+                self._writer_installed = True
+
+    def _writable(self) -> None:
+        self._flush_writes()
 
     def interrupt(self) -> None:
         """Send Ctrl-C (SIGINT) to the child's process group."""
@@ -383,6 +447,10 @@ class ScriptRun:
         if self._pid is None or not self.state.is_active:
             self._pending_stop = force
             return
+        # A process that has already exited is not "aborted" just because the
+        # user pressed stop in the same tick that it finished.
+        if self._proc is not None and self._proc.poll() is not None:
+            return
         self._signal_group(signal.SIGKILL if force else signal.SIGTERM)
 
     def resize(self, rows: int, cols: int) -> None:
@@ -398,6 +466,8 @@ class ScriptRun:
     def close(self) -> None:
         """Release the pty; safe to call more than once."""
         self._remove_watcher()
+        self._remove_writer()
+        self._write_buffer.clear()
         self._drain()
         self._flush_decoder()
         if self._master is not None:
@@ -425,6 +495,15 @@ class ScriptRun:
         with contextlib.suppress(RuntimeError, ValueError, OSError):
             asyncio.get_running_loop().remove_reader(self._master)
 
+    def _remove_writer(self) -> None:
+        if not self._writer_installed:
+            return
+        self._writer_installed = False
+        if self._master is None:
+            return
+        with contextlib.suppress(RuntimeError, ValueError, OSError):
+            asyncio.get_running_loop().remove_writer(self._master)
+
     def _finish(self) -> None:
         if self._finished:
             return
@@ -446,6 +525,9 @@ class ScriptRun:
             self.state = RunState.FAILED
 
         self._remove_watcher()
+        # Close here rather than relying on the caller: an fd leaked per run
+        # eventually exhausts the process limit and no script can start.
+        self.close()
         if self._on_finished is not None:
             self._on_finished(self)
 

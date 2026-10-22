@@ -1,7 +1,6 @@
 """Build ``docs/index.html`` from the README.
 
-Kept dependency-free on purpose: ``markdown_it`` and ``pygments`` both ship
-with Textual, so regenerating the page needs nothing installed::
+The `docs` extra installs ``markdown_it`` and ``pygments``::
 
     python tools/build_docs.py
 

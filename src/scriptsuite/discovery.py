@@ -250,7 +250,8 @@ def _clip(text: str) -> str:
 
 def _first_comment(lines: list[str]) -> str:
     """Best-effort description from the leading comment block."""
-    for line in lines[1:]:
+    start = 1 if lines and lines[0].startswith("#!") else 0
+    for line in lines[start:]:
         match = _HASH_COMMENT.match(line)
         if match:
             body = match.group("body").strip()
@@ -290,6 +291,37 @@ _FALLBACK_SHELLS = {
     ".fish": "fish",
 }
 
+#: Shebang interpreter -> language.  Versioned names such as ``python3.12``
+#: are normalised by stripping the trailing version.
+_SHEBANG_LANGUAGES = {
+    "python": "python",
+    "pypy": "python",
+    "bash": "shell",
+    "sh": "shell",
+    "zsh": "shell",
+    "fish": "shell",
+    "dash": "shell",
+    "ksh": "shell",
+    "node": "node",
+    "nodejs": "node",
+    "ruby": "ruby",
+    "perl": "perl",
+    "php": "php",
+    "lua": "lua",
+    "tclsh": "tcl",
+    "expect": "expect",
+}
+
+
+def _language_from_shebang(shebang: tuple[str, ...]) -> str | None:
+    """The language implied by an interpreter path, if it is one we know."""
+    name = Path(shebang[0]).name.lower()
+    if name.startswith("python"):
+        return "python"
+    if name.startswith("pypy"):
+        return "python"
+    return _SHEBANG_LANGUAGES.get(name)
+
 
 def _build_command(
     path: Path,
@@ -320,6 +352,10 @@ def _build_command(
         shell = _FALLBACK_SHELLS.get(suffix)
         if shell:
             template = (shell, "{path}")
+    elif template == ("{path}",) and suffix in _FALLBACK_SHELLS:
+        # An executable shell script without a shebang would still fail with
+        # ENOEXEC, so the interpreter is not optional here.
+        template = (_FALLBACK_SHELLS[suffix], "{path}")
 
     command = [
         python if (python and item == sys.executable) else item for item in template
@@ -353,12 +389,10 @@ def _scan_file(path: Path, root: Path, python: str | None) -> ScriptInfo | None:
     language = LANGUAGES.get(suffix)
 
     shebang = _shebang_command(lines)
+    if shebang:
+        language = _language_from_shebang(shebang) or language
     if language is None:
-        if shebang:
-            interpreter = Path(shebang[0]).name
-            language = interpreter.removesuffix("python").removesuffix("3") or interpreter
-        else:
-            return None
+        return None
 
     description, is_test = _describe(lines, language, path)
 
@@ -367,7 +401,7 @@ def _scan_file(path: Path, root: Path, python: str | None) -> ScriptInfo | None:
     except OSError:
         return None
 
-    executable = bool(info.st_mode & stat.S_IXUSR)
+    executable = bool(info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
 
     return ScriptInfo(
         name=path.stem,
@@ -439,9 +473,13 @@ def discover(
         iterator = root.glob("*")
 
     for path in iterator:  # type: ignore[union-attr]
-        if path.name.startswith(".") or path.is_dir():
+        if path.name.startswith(".") or not path.is_file():
             continue
-        if any(part in SKIP_DIRS or part.startswith(".") for part in path.parts[:-1]):
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            relative = path
+        if any(part in SKIP_DIRS or part.startswith(".") for part in relative.parts[:-1]):
             continue
         # An unknown extension is not a reason to skip: the shebang says how
         # to run it.  Checking costs a two-byte read per unfamiliar file.

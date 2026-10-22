@@ -18,14 +18,15 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("/", "filter the list"),
             ("escape", "clear the filter / leave a field"),
             ("f5", "rescan the scripts folder"),
-            ("ctrl+a", "run every script in sequence"),
+            ("ctrl+a", "run every visible script in sequence"),
+            ("ctrl+shift+k", "cancel a run-all sequence"),
         ],
     ),
     (
         "run control",
         [
             ("ctrl+r", "re-run the current script"),
-            ("ctrl+k", "stop the run (SIGTERM)"),
+            ("ctrl+k", "stop the run (SIGTERM, then SIGKILL)"),
             ("ctrl+c", "interrupt the run (SIGINT)"),
             ("ctrl+l", "clear the output"),
         ],
@@ -33,11 +34,12 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "stdin",
         [
-            ("f2 / tab", "jump to the input bar"),
+            ("f2", "jump to the input bar"),
             ("enter", "send the line to the script"),
             ("↑ ↓", "recall previous input"),
-            ("f6", "raw mode: forward every keystroke"),
-            ("escape", "give focus back to the list"),
+            ("f6", "raw mode: forward keys verbatim"),
+            ("f6 again", "leave raw mode (escape itself is forwarded)"),
+            ("escape", "give focus back to the list in line mode"),
             ("…", "focus jumps here on its own at a prompt"),
         ],
     ),
@@ -90,6 +92,7 @@ class HelpScreen(ModalScreen[None]):
     }
     HelpScreen > HelpPanel {
         width: 76;
+        max-width: 96%;
         height: auto;
         max-height: 80%;
         border: round $accent;
@@ -131,9 +134,9 @@ class HelpScreen(ModalScreen[None]):
     """
 
     BINDINGS = [
-        Binding("escape", "dismiss", "Close"),
+        Binding("escape", "dismiss", "Close", priority=True),
         Binding("q", "dismiss", "Close", show=False),
-        Binding("f1", "dismiss", "Close", show=False),
+        Binding("f1", "dismiss", "Close", show=False, priority=True),
     ]
 
     def compose(self) -> ComposeResult:

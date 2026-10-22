@@ -165,6 +165,8 @@ class ScriptList(ListView):
 
     BINDINGS = [
         Binding("/", "filter", "Filter", show=False),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
     ]
 
     filter_text = var("", init=False)
@@ -174,6 +176,10 @@ class ScriptList(ListView):
         self._all: list[ScriptInfo] = []
         self._rows: list[ScriptRow] = []
         self._token = 0
+        self._selected_key: str | None = None
+        #: Optional callback ``key -> (state, summary)`` used when rows are
+        #: rebuilt, so a rescan does not erase every run badge.
+        self.state_for: Any = None
 
     # -- population -----------------------------------------------------
 
@@ -209,18 +215,28 @@ class ScriptList(ListView):
 
     async def _rebuild(self, token: int) -> None:
         scripts = self.visible_scripts()
+        if token != self._token:
+            return
+
+        desired = self._selected_key
         rows = [ScriptRow(info) for info in scripts]
 
         await self.clear()
         if token != self._token:
             # A newer rebuild was requested while this one was in flight.
+            self._rows = []
             return
 
         self._rows = rows
         if rows:
             # Mount first: ListView rejects an index beyond its current nodes.
             await self.mount_all(rows)
-            self.index = 0
+            index = next((i for i, row in enumerate(rows) if row.info.key == desired), 0)
+            self.index = index
+            if self.state_for is not None:
+                for row in rows:
+                    state, summary = self.state_for(row.info.key)
+                    row.set_state(state, summary)
         self._mark_current()
 
     # -- selection ------------------------------------------------------
@@ -243,6 +259,7 @@ class ScriptList(ListView):
         return None
 
     def focus_script(self, key: str) -> None:
+        self._selected_key = key
         for index, row in enumerate(self._rows):
             if row.info.key == key:
                 self.index = index
@@ -250,6 +267,8 @@ class ScriptList(ListView):
 
     def _mark_current(self) -> None:
         current = self.current_row
+        if current is not None:
+            self._selected_key = current.info.key
         for row in self._rows:
             row.set_current(row is current)
 

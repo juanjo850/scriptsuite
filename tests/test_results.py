@@ -140,6 +140,26 @@ def test_tap_counts():
     assert summary.ok is False
 
 
+def test_multiple_summaries_replace_rather_than_accumulate():
+    parser = ResultParser()
+    parser.feed("===== 2 passed, 1 failed in 0.1s =====\n")
+    parser.feed("===== 5 passed in 0.2s =====\n")
+    summary = parser.finalize(0)
+    assert summary.passed == 5
+    assert summary.failed is None
+    assert summary.total == 5
+
+
+def test_tap_counts_survive_a_long_stream():
+    parser = ResultParser()
+    parser.feed("TAP version 13\n1..1000\n")
+    for index in range(1, 1001):
+        parser.feed(f"ok {index} - case {index}\n")
+    summary = parser.finalize(0)
+    assert summary.passed == 1000
+    assert summary.total == 1000
+
+
 # -- fallbacks --------------------------------------------------------------
 
 

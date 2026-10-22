@@ -80,6 +80,8 @@ Screen {
 /* ---------------------------------------------------------- reserved slots */
 
 #bottom-pane {
+    /* Collapsed by default: f8 opens it, f7 opens it expanded. */
+    display: none;
     height: 16;
     margin-top: 1;
 }

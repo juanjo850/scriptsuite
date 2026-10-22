@@ -100,9 +100,9 @@ class ScriptSuiteApp(App[None]):
         Binding("ctrl+u", "clear_args", "Clear args", show=False),
         Binding("f5", "rescan", "Rescan", show=True),
         Binding("f6", "toggle_raw", "Raw", show=False),
-        Binding("f7", "toggle_source_max", "Source", show=False),
+        Binding("f7", "toggle_source_max", "Expand", show=False),
+        Binding("f8", "toggle_bottom", "Source", show=False),
         Binding("f9", "toggle_right", "Right", show=False),
-        Binding("f10", "toggle_bottom", "Bottom", show=False),
         Binding("f11", "toggle_sidebar", "Sidebar", show=False),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
@@ -909,17 +909,37 @@ class ScriptSuiteApp(App[None]):
         self.push_screen(HelpScreen())
 
     def action_toggle_source_max(self) -> None:
-        """Give the source pane the room, or give it back."""
-        self.screen.set_class(not self.screen.has_class("-source-max"), "-source-max")
-        maximized = self.screen.has_class("-source-max")
-        self._set_message("source pane expanded" if maximized else "source pane restored")
+        """Expand the source pane, or restore it to its normal height."""
+        pane = self.query_one("#bottom-pane")
+        if not pane.display:
+            # F7 is also the way back to a collapsed source pane.
+            pane.display = True
+            self.screen.set_class(True, "-source-max")
+            self._set_message("source pane expanded")
+        else:
+            self.screen.set_class(not self.screen.has_class("-source-max"), "-source-max")
+            maximized = self.screen.has_class("-source-max")
+            self._set_message(
+                "source pane expanded" if maximized else "source pane restored"
+            )
+        self._set_status_keys()
         self._resize_active()
 
     def action_toggle_right(self) -> None:
         self._toggle_pane("#right-pane", "right pane")
 
     def action_toggle_bottom(self) -> None:
-        self._toggle_pane("#bottom-pane", "bottom pane")
+        pane = self.query_one("#bottom-pane")
+        if pane.display:
+            pane.display = False
+            self.screen.set_class(False, "-source-max")
+            self._set_message("source pane hidden")
+        else:
+            pane.display = True
+            self.screen.set_class(False, "-source-max")
+            self._set_message("source pane shown")
+        self._set_status_keys()
+        self._resize_active()
 
     def action_toggle_sidebar(self) -> None:
         self._toggle_pane("#sidebar", "sidebar")
@@ -990,14 +1010,15 @@ class ScriptSuiteApp(App[None]):
             ("enter", "run"),
             ("f2", "input"),
             ("f5", "rescan"),
+            # Keep the two bottom-pane controls together.
+            ("f7", "expand"),
+            ("f8", "source"),
             ("f1", "keys"),
         ]
         if self.query_one("#right-pane").display and not self.screen.has_class(
             "-compact"
         ):
             keys.append(("f9", "right"))
-        if self.query_one("#bottom-pane").display:
-            keys.append(("f10", "bottom"))
         if self._status is not None:
             self._status.set_keys(keys)
 

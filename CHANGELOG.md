@@ -18,6 +18,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shifted punctuation and Unicode characters.
 - A stop pressed while a run is still starting is honoured instead of being
   ignored.
+- A single click only highlights a script; running now needs a double-click or
+  Enter.
+- The source pane starts collapsed, with `f7`/`f8` adjacent for expand and
+  toggle.
+- The sample suite's pty check no longer fails just because pytest captures
+  `sys.stdout`.
 - `--no-recursive` now applies to the interactive workspace as well as `--list`.
 - Rescanning runs off the UI thread and preserves the selected script and run
   badges.

@@ -684,8 +684,38 @@ async def test_all_four_regions_exist(app):
 
 async def test_panes_start_visible(app):
     instance, _ = app
-    for selector in ("#sidebar", "#right-pane", "#bottom-pane"):
-        assert instance.query_one(selector).display, selector
+    assert instance.query_one("#sidebar").display
+    assert instance.query_one("#right-pane").display
+    # The source pane starts collapsed on purpose.
+    assert not instance.query_one("#bottom-pane").display
+
+
+async def test_bottom_pane_toggles(app):
+    instance, pilot = app
+    instance.action_toggle_bottom()
+    await pilot.pause()
+    assert instance.query_one("#bottom-pane").display
+    instance.action_toggle_bottom()
+    await pilot.pause()
+    assert not instance.query_one("#bottom-pane").display
+
+
+async def test_expand_opens_the_collapsed_source_pane(app):
+    instance, pilot = app
+    instance.action_toggle_source_max()
+    await pilot.pause()
+    assert instance.query_one("#bottom-pane").display
+    assert instance.screen.has_class("-source-max")
+    instance.action_toggle_source_max()
+    await pilot.pause()
+    assert not instance.screen.has_class("-source-max")
+
+
+async def test_bottom_pane_keys_are_adjacent(app):
+    instance, _ = app
+    status = instance.query_one("#status-bar", StatusBar)
+    labels = [key for key, _ in status.key_hints]
+    assert labels.index("f8") == labels.index("f7") + 1
 
 
 async def test_right_pane_toggles(app):
@@ -696,13 +726,6 @@ async def test_right_pane_toggles(app):
     instance.action_toggle_right()
     await pilot.pause()
     assert instance.query_one("#right-pane").display
-
-
-async def test_bottom_pane_toggles(app):
-    instance, pilot = app
-    instance.action_toggle_bottom()
-    await pilot.pause()
-    assert not instance.query_one("#bottom-pane").display
 
 
 async def test_sidebar_toggles(app):
@@ -805,6 +828,24 @@ async def test_filter_narrows_the_list(app):
     await pilot.pause()
     await pilot.pause()
     assert [info.name for info in sidebar.visible_scripts()] == ["hello"]
+
+
+async def test_single_click_highlights_and_double_click_runs(app):
+    instance, pilot = app
+    sidebar = instance.query_one("#sidebar-list")
+    target = next(script for script in instance.scripts if script.name == "hello")
+    row = sidebar.row_for(target.key)
+    assert row is not None
+
+    await pilot.click(row, offset=(1, 0))
+    await pilot.pause()
+    assert sidebar.current_info is not None
+    assert sidebar.current_info.key == target.key
+    assert instance.states.get(target.key) is None
+
+    await pilot.click(row, offset=(1, 0), times=2)
+    await wait_for_idle(instance, pilot)
+    assert instance.states.get(target.key) is RunState.PASSED
 
 
 async def test_j_and_k_move_the_sidebar_cursor(app):

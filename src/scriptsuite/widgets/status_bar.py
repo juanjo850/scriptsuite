@@ -47,6 +47,10 @@ class StatusBar(Horizontal):
     }
     """
 
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._keys: list[tuple[str, str]] = []
+
     def compose(self):
         yield Static(Text(""), classes="message", id="status-message")
         yield Static(Text(""), classes="state", id="status-state")
@@ -79,6 +83,7 @@ class StatusBar(Horizontal):
 
     def set_keys(self, keys: list[tuple[str, str]]) -> None:
         """``[("enter", "run"), ("f5", "rescan")]`` renders as key hints."""
+        self._keys = list(keys)
         text = Text()
         for index, (key, label) in enumerate(keys):
             if index:
@@ -88,3 +93,8 @@ class StatusBar(Horizontal):
         keys_widget = self.query("#status-keys")
         if keys_widget:
             keys_widget[0].update(text)
+
+    @property
+    def key_hints(self) -> list[tuple[str, str]]:
+        """The key hints currently rendered, in display order."""
+        return list(self._keys)

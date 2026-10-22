@@ -6,7 +6,6 @@ header, failure names — is easy to see. Run it directly or point pytest at it.
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 
@@ -22,9 +21,14 @@ def test_string_helpers() -> None:
     assert ",".join(["a", "b"]) == "a,b"
 
 
-def test_running_on_a_real_terminal() -> None:
-    """scriptsuite launches scripts on a pty, so isatty() holds."""
-    assert sys.stdout.isatty(), "expected a pty, got a pipe"
+def test_running_on_a_real_terminal(capfd: pytest.CaptureFixture[str]) -> None:
+    """scriptsuite launches scripts on a pty, so the original stdout is a tty.
+
+    pytest captures stdout by replacing its file descriptor.  Suspend that
+    capture for the check so we look at the stream scriptsuite actually gave us.
+    """
+    with capfd.disabled():
+        assert sys.stdout.isatty(), "expected a pty, got a pipe"
 
 
 def test_deliberate_failure() -> None:

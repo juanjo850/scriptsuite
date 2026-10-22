@@ -58,8 +58,8 @@ SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         "layout",
         [
             ("f7", "expand / restore the source pane"),
+            ("f8", "toggle the source pane (collapsed by default)"),
             ("f9", "toggle the right pane"),
-            ("f10", "toggle the bottom pane"),
             ("f11", "toggle the sidebar"),
             ("mouse wheel", "scroll the source pane"),
         ],

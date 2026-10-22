@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from rich.text import Text
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -101,6 +102,23 @@ class ScriptRow(ListItem):
         self.state = RunState.IDLE
         self.summary: str | None = None
 
+    class Clicked(Message):
+        """A row was clicked; ``chain`` is 1 for a single, 2 for a double click."""
+
+        def __init__(self, row: ScriptRow, chain: int) -> None:
+            super().__init__()
+            self.row = row
+            self.chain = chain
+
+    def _on_click(self, event: events.Click) -> None:
+        # Replace ListItem's behaviour, which selects on every click. One click
+        # only moves the highlight; a double click is what starts a run.
+        event.stop()
+        # ListItem's own `_on_click` runs later in the MRO unless prevented;
+        # that base handler is what posts `_ChildClicked` and selects.
+        event.prevent_default()
+        self.post_message(self.Clicked(self, event.chain))
+
     def compose(self) -> ComposeResult:
         yield Static(status_glyph(self.state), classes="glyph")
         with Vertical(classes="meta"):
@@ -142,7 +160,7 @@ class ScriptRow(ListItem):
 
 
 class ScriptActivated(Message):
-    """The highlighted script was activated (Enter / click)."""
+    """The highlighted script was activated (Enter / double-click)."""
 
     def __init__(self, info: ScriptInfo) -> None:
         super().__init__()
@@ -276,6 +294,18 @@ class ScriptList(ListView):
         # Deliberately not stopped: the app listens for this to retitle the
         # header as the selection moves.
         self._mark_current()
+
+    @on(ScriptRow.Clicked)
+    def _on_row_clicked(self, event: ScriptRow.Clicked) -> None:
+        event.stop()
+        self.focus()
+        try:
+            index = self._nodes.index(event.row)
+        except ValueError:  # pragma: no cover - row removed mid-click
+            return
+        self.index = index
+        if event.chain >= 2:
+            self.post_message(self.Selected(self, event.row, index))
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         event.stop()

@@ -100,6 +100,8 @@ launch explains the limitation.
 | Key | Action |
 |---|---|
 | `↑ ↓` `j k` | move through the list |
+| `click` | highlight a script |
+| `double-click` | run the highlighted script |
 | `enter` | run the highlighted script |
 | `/` | jump to the filter |
 | `f5` | rescan the folder |
@@ -150,7 +152,8 @@ the list.
 | Key | Action |
 |---|---|
 | `f7` | expand / restore the source pane |
-| `f9` `f10` `f11` | toggle the right / bottom / sidebar pane |
+| `f8` | toggle the source pane (collapsed by default) |
+| `f9` `f11` | toggle the right / sidebar pane |
 
 ## What it does
 
@@ -233,12 +236,12 @@ Where nothing can be found, the pane says so rather than guessing.
 ### Shows the source
 
 The bottom pane holds the highlighted script, syntax highlighted and read-only,
-with line numbers. Highlighting uses Pygments through Rich, so no tree-sitter
-grammar is needed; Expect borrows the Tcl lexer, which is what it is. Long
-lines wrap rather than disappearing behind a horizontal scrollbar, and an
-oversized file is truncated with a note rather than stalling the interface.
-`f7` expands the pane to fill the workspace when you want to read rather than
-watch.
+with line numbers. It starts collapsed so the output gets the room; `f8` opens
+it and `f7` expands it to fill the workspace when you want to read rather than
+watch. Highlighting uses Pygments through Rich, so no tree-sitter grammar is
+needed; Expect borrows the Tcl lexer, which is what it is. Long lines wrap rather
+than disappearing behind a horizontal scrollbar, and an oversized file is
+truncated with a note rather than stalling the interface.
 
 ## Layout
 

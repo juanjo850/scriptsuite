@@ -146,6 +146,17 @@ class FieldRow(Vertical):
 
     def apply(self, value: str | bool) -> None:
         """Set the control without echoing a change back to the app."""
+        from textual.css.query import NoMatches
+
+        try:
+            if self.field.takes_value:
+                widget = self.query_one(Input)
+            else:
+                widget = self.query_one(Checkbox)
+        except NoMatches:
+            # Not composed yet (mount is deferred): remember and apply on mount.
+            self._value = value
+            return
         if self.field.takes_value:
             widget = self.query_one(Input)
             text = str(value or "")
@@ -299,6 +310,10 @@ class ArgsPanel(Vertical):
         """Point the pane at ``info`` and draw its controls."""
         self.key = info.key if info else None
         self._program = program
+
+        # Nothing to paint while the pane is hidden; it is refreshed when shown.
+        if not self.display:
+            return
 
         head = self.query("#args-head")
         if head:

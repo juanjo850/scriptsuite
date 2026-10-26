@@ -103,6 +103,10 @@ class SourceView(Vertical):
     def show(self, info: ScriptInfo | None) -> None:
         """Point the pane at ``info`` and render its source."""
         self.key = info.key if info else None
+        # Rendering a hidden pane is wasted work: the content is (re)drawn
+        # when the pane is shown again.
+        if not self.display:
+            return
         head = self.query("#source-head")
         body = self.query("#source-body")
         if not head or not body:

@@ -195,6 +195,9 @@ class ScriptList(ListView):
         self._rows: list[ScriptRow] = []
         self._token = 0
         self._selected_key: str | None = None
+        #: The row currently carrying the ``--current`` class, tracked so a
+        #: highlight change only re-styles two rows instead of every row.
+        self._current_row: ScriptRow | None = None
         #: Optional callback ``key -> (state, summary)`` used when rows are
         #: rebuilt, so a rescan does not erase every run badge.
         self.state_for: Any = None
@@ -246,6 +249,7 @@ class ScriptList(ListView):
             return
 
         self._rows = rows
+        self._current_row = None
         if rows:
             # Mount first: ListView rejects an index beyond its current nodes.
             await self.mount_all(rows)
@@ -287,8 +291,12 @@ class ScriptList(ListView):
         current = self.current_row
         if current is not None:
             self._selected_key = current.info.key
-        for row in self._rows:
-            row.set_current(row is current)
+        previous = self._current_row
+        if previous is not None and previous is not current and previous.parent is not None:
+            previous.set_current(False)
+        if current is not None and current is not previous:
+            current.set_current(True)
+        self._current_row = current
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         # Deliberately not stopped: the app listens for this to retitle the

@@ -916,6 +916,7 @@ class ScriptSuiteApp(App[None]):
             pane.display = True
             self.screen.set_class(True, "-source-max")
             self._set_message("source pane expanded")
+            self._show_source(self.current)
         else:
             self.screen.set_class(not self.screen.has_class("-source-max"), "-source-max")
             maximized = self.screen.has_class("-source-max")
@@ -938,6 +939,7 @@ class ScriptSuiteApp(App[None]):
             pane.display = True
             self.screen.set_class(False, "-source-max")
             self._set_message("source pane shown")
+            self._show_source(self.current)
         self._set_status_keys()
         self._resize_active()
 
@@ -947,6 +949,8 @@ class ScriptSuiteApp(App[None]):
     def _toggle_pane(self, selector: str, name: str) -> None:
         pane = self.query_one(selector)
         pane.display = not pane.display
+        if pane.display and selector == "#right-pane":
+            self._show_args(self.current)
         self._set_status_keys()
         self._set_message(f"{name} {'hidden' if not pane.display else 'shown'}")
         self._resize_active()
@@ -990,6 +994,9 @@ class ScriptSuiteApp(App[None]):
         screen = self.screen
         screen.set_class(self.size.width < NARROW_WIDTH, "-narrow")
         screen.set_class(self.size.width < COMPACT_WIDTH, "-compact")
+        right = self.query_one("#right-pane")
+        if right.display and self.current is not None:
+            self._show_args(self.current)
 
     # ------------------------------------------------------------------
     # Status bar
